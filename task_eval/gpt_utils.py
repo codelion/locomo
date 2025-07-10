@@ -243,13 +243,23 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
             if qa['category'] == 2:
                 questions.append(qa['question'] + ' Use DATE of CONVERSATION to answer with an approximate date.')
             elif qa['category'] == 5:
+                # Check for both 'answer' and 'adversarial_answer' keys
+                answer_text = None
+                if 'answer' in qa:
+                    answer_text = qa['answer']
+                elif 'adversarial_answer' in qa:
+                    answer_text = qa['adversarial_answer']
+                else:
+                    print(f"Warning: Missing 'answer' or 'adversarial_answer' key in QA item: {qa}")
+                    continue
+                
                 question = qa['question'] + " Select the correct answer: (a) {} (b) {}. "
                 if random.random() < 0.5:
-                    question = question.format('Not mentioned in the conversation', qa['answer'])
-                    answer = {'a': 'Not mentioned in the conversation', 'b': qa['answer']}
+                    question = question.format('Not mentioned in the conversation', answer_text)
+                    answer = {'a': 'Not mentioned in the conversation', 'b': answer_text}
                 else:
-                    question = question.format(qa['answer'], 'Not mentioned in the conversation')
-                    answer = {'b': 'Not mentioned in the conversation', 'a': qa['answer']}
+                    question = question.format(answer_text, 'Not mentioned in the conversation')
+                    answer = {'b': 'Not mentioned in the conversation', 'a': answer_text}
 
                 cat_5_idxs.append(len(questions))
                 questions.append(question)

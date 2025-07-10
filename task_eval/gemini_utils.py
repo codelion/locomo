@@ -6,10 +6,10 @@ import random
 import os, json
 from tqdm import tqdm
 import time
-from global_methods import run_gemini
+from global_methods import run_gemini, get_gemini_client
 
 
-MAX_LENGTH={'gemini-pro-1.0': 1000000}
+MAX_LENGTH={'gemini-2.0-flash': 1000000, 'gemini-2.5-flash': 1000000, 'gemini-2.5-pro': 1000000}
 PER_QA_TOKEN_BUDGET = 50
 
 QA_PROMPT = """
@@ -87,7 +87,7 @@ def get_cat_5_answer(model_prediction, answer_key):
     else:
         return model_prediction
 
-def get_input_context(data, num_question_tokens, model, args):
+def get_input_context(data, num_question_tokens, client, args):
 
     query_conv = ''
     min_session = -1
@@ -103,9 +103,9 @@ def get_input_context(data, num_question_tokens, model, args):
                     turn += ' and shared %s.' % dialog["blip_caption"]
                 turn += '\n'
         
-                # num_tokens = model.count_tokens('DATE: ' + data['session_%s_date_time' % i] + '\n' + 'CONVERSATION:\n' + turn).total_tokens
+                # num_tokens = client.models.count_tokens(model=args.model, contents='DATE: ' + data['session_%s_date_time' % i] + '\n' + 'CONVERSATION:\n' + turn).total_tokens
 
-                # if (num_tokens + model.count_tokens(query_conv).total_tokens + num_question_tokens) < (MAX_LENGTH[args.model]-(PER_QA_TOKEN_BUDGET*(args.batch_size))): # 20 tokens assigned for answers
+                # if (num_tokens + client.models.count_tokens(model=args.model, contents=query_conv).total_tokens + num_question_tokens) < (MAX_LENGTH[args.model]-(PER_QA_TOKEN_BUDGET*(args.batch_size))): # 20 tokens assigned for answers
                 #     query_conv = turn + query_conv
                 # else:
                 #     min_session = i
@@ -119,14 +119,14 @@ def get_input_context(data, num_question_tokens, model, args):
             break
         
         # if min_session == -1:
-        #     print("Saved %s tokens in query conversation from full conversation" % model.count_tokens(query_conv).total_tokens)
+        #     print("Saved %s tokens in query conversation from full conversation" % client.models.count_tokens(model=args.model, contents=query_conv).total_tokens)
         # else:
-        #     print("Saved %s conv. tokens + %s question tokens in query from %s out of %s sessions" % (model.count_tokens(query_conv).total_tokens, num_question_tokens, max_session-min_session, max_session))
+        #     print("Saved %s conv. tokens + %s question tokens in query from %s out of %s sessions" % (client.models.count_tokens(model=args.model, contents=query_conv).total_tokens, num_question_tokens, max_session-min_session, max_session))
 
     return query_conv
 
 
-def get_gemini_answers(model, in_data, out_data, prediction_key, args):
+def get_gemini_answers(client, in_data, out_data, prediction_key, args):
 
 
     assert len(in_data['qa']) == len(out_data['qa']), (len(in_data['qa']), len(out_data['qa']))
@@ -134,7 +134,7 @@ def get_gemini_answers(model, in_data, out_data, prediction_key, args):
     # start instruction prompt
     speakers_names = list(set([d['speaker'] for d in in_data['conversation']['session_1']]))
     start_prompt = CONV_START_PROMPT.format(speakers_names[0], speakers_names[1])
-    # start_tokens = model.count_tokens(start_prompt).total_tokens
+    # start_tokens = client.models.count_tokens(model=args.model, contents=start_prompt).total_tokens
     start_tokens = 100
 
     if args.rag_mode:
@@ -164,13 +164,25 @@ def get_gemini_answers(model, in_data, out_data, prediction_key, args):
             if qa['category'] == 2:
                 questions.append(qa['question'] + ' Use DATE of CONVERSATION to answer with an approximate date.')
             elif qa['category'] == 5:
+                # Check for both 'answer' and 'adversarial_answer' keys
+                answer_text = None
+                if 'answer' in qa:
+                    answer_text = qa['answer']
+                elif 'adversarial_answer' in qa:
+                    answer_text = qa['adversarial_answer']
+                else:
+                    print(f"Warning: Missing 'answer' or 'adversarial_answer' key in QA item: {qa}")
+                    print(f"Available keys: {list(qa.keys())}")
+                    # Skip this question if no answer is available
+                    continue
+                
                 question = qa['question'] + " Select the correct answer: (a) {} (b) {}. "
                 if random.random() < 0.5:
-                    question = question.format('Not mentioned in the conversation', qa['answer'])
-                    answer = {'a': 'Not mentioned in the conversation', 'b': qa['answer']}
+                    question = question.format('Not mentioned in the conversation', answer_text)
+                    answer = {'a': 'Not mentioned in the conversation', 'b': answer_text}
                 else:
-                    question = question.format(qa['answer'], 'Not mentioned in the conversation')
-                    answer = {'b': 'Not mentioned in the conversation', 'a': qa['answer']}
+                    question = question.format(answer_text, 'Not mentioned in the conversation')
+                    answer = {'b': 'Not mentioned in the conversation', 'a': answer_text}
 
                 cat_5_idxs.append(len(questions))
                 questions.append(question)
@@ -190,22 +202,22 @@ def get_gemini_answers(model, in_data, out_data, prediction_key, args):
             raise NotImplementedError
         else:
             question_prompt =  QA_PROMPT_BATCH + "\n".join(["%s: %s" % (k, q) for k, q in enumerate(questions)])
-            num_question_tokens = model.count_tokens(question_prompt).total_tokens
+            num_question_tokens = client.models.count_tokens(model=args.model, contents=question_prompt).total_tokens
             num_question_tokens = 200
-            query_conv = get_input_context(in_data['conversation'], num_question_tokens + start_tokens, model, args)
+            query_conv = get_input_context(in_data['conversation'], num_question_tokens + start_tokens, client, args)
             query_conv = start_prompt + query_conv
         
 
-        # print("%s tokens in query" % model.count_tokens(query_conv).total_tokens)
+        # print("%s tokens in query" % client.models.count_tokens(model=args.model, contents=query_conv).total_tokens)
 
-        if 'pro-1.0' in args.model:
+        if 'pro' in args.model:
             time.sleep(30)
 
         if args.batch_size == 1:
 
             query = query_conv + '\n\n' + QA_PROMPT.format(questions[0]) if len(cat_5_idxs) == 0 else query_conv + '\n\n' + QA_PROMPT_CAT_5.format(questions[0])
 
-            answer = run_gemini(model, query)
+            answer = run_gemini(client, args.model, query)
             
             if len(cat_5_idxs) > 0:
                 answer = get_cat_5_answer(answer, cat_5_answers[0])
@@ -225,9 +237,9 @@ def get_gemini_answers(model, in_data, out_data, prediction_key, args):
                 try:
                     trials += 1
                     # print("Trial %s" % trials)
-                    # print("Sending query of %s tokens" % model.count_tokens(query).total_tokens)
+                    # print("Sending query of %s tokens" % client.models.count_tokens(model=args.model, contents=query).total_tokens)
                     # print("Trying with answer token budget = %s per question" % PER_QA_TOKEN_BUDGET)
-                    answer = run_gemini(model, query)
+                    answer = run_gemini(client, args.model, query)
                     answer = answer.replace('\\"', "'").replace('json','').replace('`','').strip()
 
                     # try:

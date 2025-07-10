@@ -197,9 +197,23 @@ def eval_question_answering(qas, eval_key='prediction', metric='f1'):
     for i, line in enumerate(qas):
         # line = json.loads(line)
         if type(line[eval_key]) == list:
-            answer = line['answer']
+            # Check for both 'answer' and 'adversarial_answer' keys
+            if 'answer' in line:
+                answer = line['answer']
+            elif 'adversarial_answer' in line:
+                answer = line['adversarial_answer']
+            else:
+                print(f"Warning: Missing answer key in evaluation line: {line}")
+                continue
         else:
-            answer = str(line['answer'])
+            # Check for both 'answer' and 'adversarial_answer' keys
+            if 'answer' in line:
+                answer = str(line['answer'])
+            elif 'adversarial_answer' in line:
+                answer = str(line['adversarial_answer'])
+            else:
+                print(f"Warning: Missing answer key in evaluation line: {line}")
+                continue
         if line['category'] == 3:
             answer = answer.split(';')[0].strip()
         

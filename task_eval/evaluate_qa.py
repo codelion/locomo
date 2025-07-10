@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import os, json
 from tqdm import tqdm
 import argparse
-from global_methods import set_openai_key, set_anthropic_key, set_gemini_key
+from global_methods import set_openai_key, set_anthropic_key, set_gemini_key, get_gemini_client
 from task_eval.evaluation import eval_question_answering
 from task_eval.evaluation_stats import analyze_aggr_acc
 from task_eval.gpt_utils import get_gpt_answers
@@ -14,7 +14,6 @@ from task_eval.gemini_utils import get_gemini_answers
 from task_eval.hf_llm_utils import init_hf_model, get_hf_answers
 
 import numpy as np
-import google.generativeai as genai
 
 def parse_args():
 
@@ -50,12 +49,12 @@ def main():
         set_anthropic_key()
 
     elif 'gemini' in args.model:
-        # set openai API key
-        set_gemini_key()
+        # Get Gemini client
+        gemini_client = get_gemini_client()
+        # Map old model names to new ones if needed
         if args.model == "gemini-pro-1.0":
-            model_name = "models/gemini-1.0-pro-latest"
-
-        gemini_model = genai.GenerativeModel(model_name)
+            print("Warning: gemini-pro-1.0 is deprecated. Using gemini-2.5-pro instead.")
+            args.model = "gemini-2.5-pro"
     
     elif any([model_name in args.model for model_name in ['gemma', 'llama', 'mistral']]):
         hf_pipeline, hf_model_name = init_hf_model(args)
@@ -89,7 +88,7 @@ def main():
         elif 'claude' in args.model:
             answers = get_claude_answers(data, out_data, prediction_key, args)
         elif 'gemini' in args.model:
-            answers = get_gemini_answers(gemini_model, data, out_data, prediction_key, args)
+            answers = get_gemini_answers(gemini_client, data, out_data, prediction_key, args)
         elif any([model_name in args.model for model_name in ['gemma', 'llama', 'mistral']]):
             answers = get_hf_answers(data, out_data, args, hf_pipeline, hf_model_name)
         else:

@@ -5,7 +5,7 @@ import time
 import sys
 import os
 
-import google.generativeai as genai
+from google import genai
 from anthropic import Anthropic
 
 
@@ -17,9 +17,18 @@ def set_anthropic_key():
     pass
 
 def set_gemini_key():
+    # This is no longer needed with the new SDK
+    # The client will automatically use the GEMINI_API_KEY or GOOGLE_API_KEY environment variable
+    pass
 
-    # Or use `os.getenv('GOOGLE_API_KEY')` to fetch an environment variable.
-    genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
+def get_gemini_client():
+    # Get API key from environment variables
+    api_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY')
+    if not api_key:
+        raise ValueError("Please set GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
+    
+    # Create and return the client
+    return genai.Client(api_key=api_key)
 
 def set_openai_key():
     openai.api_key = os.environ['OPENAI_API_KEY']
@@ -79,10 +88,12 @@ def run_claude(query, max_new_tokens, model_name):
     return message.content[0].text
 
 
-def run_gemini(model, content: str, max_tokens: int = 0):
-
+def run_gemini(client, model_name: str, content: str, max_tokens: int = 0):
     try:
-        response = model.generate_content(content)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=content
+        )
         return response.text
     except Exception as e:
         print(f'{type(e).__name__}: {e}')
