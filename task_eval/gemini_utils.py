@@ -53,6 +53,10 @@ def process_ouput(text):
             if v is None:
                 answers[k] = ""
                 continue
+            # Convert to string if it's not already a string
+            if not isinstance(v, str):
+                v = str(v)
+                answers[k] = v
             if v.startswith('{') and v.endswith('}'):
                 try:
                     answers[k] = json.loads(v)['answer']
@@ -64,6 +68,11 @@ def process_ouput(text):
         for k, v in enumerate(answers):
             if v is None:
                 answers[k] = ""
+                continue
+            # Convert to string if it's not already a string
+            if not isinstance(v, str):
+                v = str(v)
+                answers[k] = v
             if v.startswith('{') and v.endswith('}'):
                 try:
                     answers[k] = json.loads(v)['answer']
