@@ -3,6 +3,15 @@ import math
 from tqdm import tqdm
 from collections import defaultdict
 
+# Category mapping for QA evaluation
+CATEGORY_MAPPING = {
+    1: "Multi-hop",
+    2: "Temporal", 
+    3: "Open-domain",
+    4: "Single-hop",
+    5: "Adversarial"
+}
+
 
 def get_conversation_lengths(data, encoder=None):
 
@@ -92,20 +101,25 @@ def analyze_aggr_acc(ann_file, in_file, out_file, model_name, metric_key, encode
 
     
     print("Total number of questions and corresponding accuracy in each category: ")
+    print("Category | Name        | Count | Correct | Accuracy")
+    print("-" * 55)
     total_k = 0
     total_v = 0
     # for k, v in total_counts.items():
     keys = [4, 1, 2, 3, 5]
     for k in keys:
         v = total_counts[k]
+        category_name = CATEGORY_MAPPING.get(k, f"Unknown-{k}")
         if float(v) == 0.0:
-            print("No questions found in category %s" % k)
+            print(f"No questions found in category {k} ({category_name})")
         else:
-            print(k, v, acc_counts[k], round(float(acc_counts[k])/v, 3))
+            accuracy = round(float(acc_counts[k])/v, 3)
+            print(f"{k:8} | {category_name:11} | {v:5} | {acc_counts[k]:7.1f} | {accuracy:8.3f}")
         total_v += acc_counts[k]
         total_k += v
 
-    print("Overall accuracy: ", round(float(total_v)/total_k, 3))
+    print("-" * 55)
+    print(f"Overall accuracy: {round(float(total_v)/total_k, 3):.3f}")
 
     # print("Total number of questions and corresponding accuracy by memory")
     # keys = list(memory_counts_og.keys())
@@ -123,19 +137,40 @@ def analyze_aggr_acc(ann_file, in_file, out_file, model_name, metric_key, encode
     results_dict[model_name] = {}
     results_dict[model_name]['category_counts'] = total_counts
     results_dict[model_name]['cum_accuracy_by_category'] = acc_counts
+    
+    # Add category names mapping to output
+    results_dict[model_name]['category_mapping'] = CATEGORY_MAPPING
+    
+    # Add category statistics with names
+    category_stats = {}
+    for k in [4, 1, 2, 3, 5]:
+        if k in total_counts and total_counts[k] > 0:
+            category_stats[k] = {
+                'name': CATEGORY_MAPPING.get(k, f"Unknown-{k}"),
+                'count': total_counts[k],
+                'correct': acc_counts[k],
+                'accuracy': round(float(acc_counts[k])/total_counts[k], 3)
+            }
+    results_dict[model_name]['category_statistics'] = category_stats
 
     if rag:
         results_dict[model_name]['recall_by_category'] = {k: v/total_counts[k] for k, v in recall_by_category.items()}
         print("Category and corresponding recall accuracy in each category: ")
+        print("Category | Name        | Recall")
+        print("-" * 35)
         # for k, v in recall_by_category.items():
         keys = [4, 1, 2, 3, 5]
         for k in keys:
             v = recall_by_category[k]
+            category_name = CATEGORY_MAPPING.get(k, f"Unknown-{k}")
             if float(total_counts[k]) == 0.0:
-                print("No questions found in category %s" % k)
+                print(f"No questions found in category {k} ({category_name})")
             else:
-                print(k, round(float(v)/total_counts[k], 3))
-        print("Overall recall accuracy: ", sum(list(recall_by_category.values()))/sum(list(total_counts.values())))
+                recall_acc = round(float(v)/total_counts[k], 3)
+                print(f"{k:8} | {category_name:11} | {recall_acc:6.3f}")
+        print("-" * 35)
+        overall_recall = sum(list(recall_by_category.values()))/sum(list(total_counts.values()))
+        print(f"Overall recall accuracy: {overall_recall:.3f}")
     else:
         results_dict[model_name]['category_counts_by_memory'] = memory_counts_og
         results_dict[model_name]['cum_accuracy_by_category_by_memory'] = memory_counts

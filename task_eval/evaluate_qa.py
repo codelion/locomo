@@ -15,6 +15,15 @@ from task_eval.hf_llm_utils import init_hf_model, get_hf_answers
 
 import numpy as np
 
+# Category mapping for QA evaluation
+CATEGORY_MAPPING = {
+    1: "Multi-hop",
+    2: "Temporal", 
+    3: "Open-domain",
+    4: "Single-hop",
+    5: "Adversarial"
+}
+
 def parse_args():
 
     parser = argparse.ArgumentParser()
@@ -100,6 +109,10 @@ def main():
             answers['qa'][i][model_key + '_f1'] = round(exact_matches[i], 3)
             if args.use_rag and len(recall) > 0:
                 answers['qa'][i][model_key + '_recall'] = round(recall[i], 3)
+            
+            # Add category name to output
+            category_num = answers['qa'][i].get('category', 0)
+            answers['qa'][i]['category_name'] = CATEGORY_MAPPING.get(category_num, f"Unknown-{category_num}")
 
         out_samples[data['sample_id']] = answers
 

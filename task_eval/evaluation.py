@@ -12,6 +12,15 @@ ps = PorterStemmer()
 
 LENGTH_THRESHOLD = 5
 
+# Category mapping for QA evaluation
+CATEGORY_MAPPING = {
+    1: "Multi-hop",
+    2: "Temporal", 
+    3: "Open-domain",
+    4: "Single-hop",
+    5: "Adversarial"
+}
+
 class SimpleTokenizer(object):
     ALPHA_NUM = r'[\p{L}\p{N}\p{M}]+'
     NON_WS = r'[^\p{Z}\p{C}]'
