@@ -322,7 +322,19 @@ Return ONLY the JSON array of extracted memories, nothing else.'''
         
         # Add raw conversation chunks to memory first (for direct temporal info)
         for raw_conv in raw_conversations:
-            self.add_memory(raw_conv, user_id)
+            # Create memory object directly
+            memory_id = str(uuid.uuid4())
+            embedding = self._get_embeddings([raw_conv])[0]
+            memory_obj = Memory(
+                id=memory_id,
+                memory=raw_conv,
+                embedding=embedding,
+                user_id=user_id
+            )
+            
+            if user_id not in self.memories:
+                self.memories[user_id] = []
+            self.memories[user_id].append(memory_obj)
         
         # Extract facts from the full conversation (for structured info)
         conversation_text = "\n".join(messages)
