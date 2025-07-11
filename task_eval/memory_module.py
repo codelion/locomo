@@ -279,9 +279,11 @@ Return ONLY the JSON array of extracted memories, nothing else.'''
             return []
 
     def add_conversation(self, conversation_data: Dict, user_id: str) -> None:
-        """Add conversation data to memory by extracting key facts."""
+        """Add conversation data to memory by extracting key facts AND storing raw conversations."""
         # Convert conversation sessions to messages format
         messages = []
+        raw_conversations = []
+        
         for session_key in sorted(conversation_data.keys()):
             if session_key.startswith('session_') and not session_key.endswith('_date_time'):
                 session_data = conversation_data[session_key]
@@ -292,7 +294,8 @@ Return ONLY the JSON array of extracted memories, nothing else.'''
                 if date_info:
                     messages.append(f"[Date: {date_info}]")
                 
-                # Add session conversations
+                # Process each dialog in the session
+                session_conversations = []
                 for dialog in session_data:
                     speaker = dialog.get('speaker', 'Unknown')
                     text = dialog.get('text', '')
@@ -301,9 +304,27 @@ Return ONLY the JSON array of extracted memories, nothing else.'''
                     if 'blip_caption' in dialog:
                         text += f" [shared image: {dialog['blip_caption']}]"
                     
-                    messages.append(f"{speaker}: {text}")
+                    dialog_text = f"{speaker}: {text}"
+                    messages.append(dialog_text)
+                    session_conversations.append(dialog_text)
+                
+                # Store raw conversation chunks for better temporal retrieval
+                if session_conversations:
+                    chunk_size = 3  # 3 dialog turns per chunk
+                    for i in range(0, len(session_conversations), chunk_size):
+                        chunk = session_conversations[i:i+chunk_size]
+                        conversation_chunk = "\n".join(chunk)
+                        if date_info:
+                            conversation_chunk = f"[Date: {date_info}]\n{conversation_chunk}"
+                        
+                        # Store as raw conversation memory
+                        raw_conversations.append(f"RAW_CONVERSATION: {conversation_chunk}")
         
-        # Extract facts from the full conversation
+        # Add raw conversation chunks to memory first (for direct temporal info)
+        for raw_conv in raw_conversations:
+            self.add_memory(raw_conv, user_id)
+        
+        # Extract facts from the full conversation (for structured info)
         conversation_text = "\n".join(messages)
         self.add(conversation_text, user_id)
 
@@ -429,12 +450,42 @@ Return ONLY the JSON array of extracted memories, nothing else.'''
         return any(keyword in question_lower for keyword in temporal_keywords)
     
     def _format_temporal_context(self, memories: List[Dict], question: str) -> str:
-        """Format memories with enhanced temporal information."""
+        """Format memories with enhanced temporal information, prioritizing raw conversations."""
         if not memories:
             return ""
         
-        # Use LLM to extract temporal information
-        temporal_prompt = f"""Given these memory snippets and a temporal question, extract and highlight all dates, times, and temporal information.
+        # Separate raw conversations from extracted facts
+        raw_conversations = []
+        facts = []
+        
+        for mem in memories:
+            if mem['memory'].startswith('RAW_CONVERSATION:'):
+                raw_conversations.append(mem)
+            else:
+                facts.append(mem)
+        
+        # For temporal questions, prioritize raw conversations as they contain exact dialogue
+        if raw_conversations:
+            context_parts = []
+            
+            # Add raw conversation context first
+            context_parts.append("Relevant conversation segments:")
+            for i, mem in enumerate(raw_conversations[:2]):  # Top 2 conversation chunks
+                conversation = mem['memory'].replace('RAW_CONVERSATION:', '').strip()
+                context_parts.append(f"\nSegment {i+1}:\n{conversation}")
+            
+            # Add extracted facts if available
+            if facts:
+                context_parts.append(f"\nAdditional facts:")
+                for fact in facts[:1]:  # Just 1 fact to avoid overload
+                    fact_text = fact['memory'].replace('FACT:', '').strip()
+                    context_parts.append(f"- {fact_text}")
+            
+            return "\n".join(context_parts) + "\n\n"
+        
+        else:
+            # Fallback to LLM temporal extraction if no raw conversations
+            temporal_prompt = f"""Given these memory snippets and a temporal question, extract and highlight all dates, times, and temporal information.
 
 Question: {question}
 
@@ -449,35 +500,35 @@ Extract and list all temporal information (dates, times, durations, sequences) t
 
 Format your response as a clear list of temporal facts."""
 
-        try:
-            # Use the same model client to extract temporal info
-            if 'anthropic' in str(type(self.client)):
-                response = self.client.messages.create(
-                    model=self.model_name,
-                    messages=[{"role": "user", "content": temporal_prompt}],
-                    max_tokens=300
-                )
-                temporal_info = response.content[0].text if response.content else ""
-            elif 'openai' in str(type(self.client)):
-                from global_methods import run_gpt
-                temporal_info = run_gpt(self.client, self.model_name, temporal_prompt, max_tokens=300)
-            elif 'genai' in str(type(self.client)) or 'generativeai' in str(type(self.client)):
-                from global_methods import run_gemini
-                temporal_info = run_gemini(self.client, self.model_name, temporal_prompt, max_tokens=300)
-            else:
-                # Fallback to basic extraction
-                temporal_info = self._basic_temporal_extraction(memories)
-                
-            if temporal_info and temporal_info.strip():
-                return f"Temporal context:\n{temporal_info}\n\nOriginal memories: {' '.join([mem['memory'] for mem in memories[:2]])}\n\n"
-            else:
+            try:
+                # Use the same model client to extract temporal info
+                if 'anthropic' in str(type(self.client)):
+                    response = self.client.messages.create(
+                        model=self.model_name,
+                        messages=[{"role": "user", "content": temporal_prompt}],
+                        max_tokens=300
+                    )
+                    temporal_info = response.content[0].text if response.content else ""
+                elif 'openai' in str(type(self.client)):
+                    from global_methods import run_gpt
+                    temporal_info = run_gpt(self.client, self.model_name, temporal_prompt, max_tokens=300)
+                elif 'genai' in str(type(self.client)) or 'generativeai' in str(type(self.client)):
+                    from global_methods import run_gemini
+                    temporal_info = run_gemini(self.client, self.model_name, temporal_prompt, max_tokens=300)
+                else:
+                    # Fallback to basic extraction
+                    temporal_info = self._basic_temporal_extraction(memories)
+                    
+                if temporal_info and temporal_info.strip():
+                    return f"Temporal context:\n{temporal_info}\n\nOriginal memories: {' '.join([mem['memory'] for mem in memories[:2]])}\n\n"
+                else:
+                    # Fallback to standard formatting
+                    return "Additional context: " + " ".join([mem['memory'] for mem in memories]) + "\n\n"
+                    
+            except Exception as e:
+                logger.error(f"Error in temporal extraction: {e}")
                 # Fallback to standard formatting
                 return "Additional context: " + " ".join([mem['memory'] for mem in memories]) + "\n\n"
-                
-        except Exception as e:
-            logger.error(f"Error in temporal extraction: {e}")
-            # Fallback to standard formatting
-            return "Additional context: " + " ".join([mem['memory'] for mem in memories]) + "\n\n"
     
     def _basic_temporal_extraction(self, memories: List[Dict]) -> str:
         """Basic regex-based temporal extraction as fallback."""
