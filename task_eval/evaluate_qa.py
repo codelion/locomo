@@ -42,6 +42,7 @@ def parse_args():
     parser.add_argument('--memory', action="store_true", help="Use memory-enhanced evaluation")
     parser.add_argument('--debug-memory', action="store_true", help="Enable verbose memory debugging")
     parser.add_argument('--max-samples', type=int, help="Maximum samples to evaluate (takes max from each category)")
+    parser.add_argument('--max-questions', type=int, help="Maximum QA questions per sample (for rapid testing)")
     args = parser.parse_args()
     return args
 
@@ -133,7 +134,7 @@ def main():
                     break  # Only need to categorize sample once
         
         # Take max samples per category
-        max_per_category = args.max_samples // len(category_samples) if category_samples else args.max_samples
+        max_per_category = max(1, args.max_samples // len(category_samples)) if category_samples else args.max_samples
         filtered_samples = []
         
         for category, cat_samples in category_samples.items():
@@ -144,6 +145,18 @@ def main():
         
         samples = filtered_samples
         print(f"Total samples after filtering: {len(samples)}")
+    
+    # Apply max-questions filtering if specified
+    if args.max_questions:
+        print(f"Limiting to max {args.max_questions} questions per sample...")
+        total_questions_before = sum(len(sample.get('qa', [])) for sample in samples)
+        
+        for sample in samples:
+            if 'qa' in sample and len(sample['qa']) > args.max_questions:
+                sample['qa'] = sample['qa'][:args.max_questions]
+        
+        total_questions_after = sum(len(sample.get('qa', [])) for sample in samples)
+        print(f"Questions reduced from {total_questions_before} to {total_questions_after}")
     
     prediction_key = "%s_prediction" % args.model if not args.use_rag else "%s_%s_top_%s_prediction" % (args.model, args.rag_mode, args.top_k)
     model_key = "%s" % args.model if not args.use_rag else "%s_%s_top_%s" % (args.model, args.rag_mode, args.top_k)

@@ -370,37 +370,145 @@ Return ONLY the JSON array of extracted memories, nothing else.'''
 
     def get_relevant_context(self, question: str, user_id: str, max_memories: int = 5) -> str:
         """Get relevant memory context for a question."""
+        # Check if this is a temporal question
+        is_temporal = self._is_temporal_question(question)
+        
         relevant_memories = self.search(question, user_id, limit=max_memories)
         
         if not relevant_memories:
             return ""
         
-        # Filter for higher quality memories (tuned for all-mpnet-base-v2)
-        # MPNet typically produces higher similarity scores, so we can use a more moderate threshold
-        high_quality_memories = [mem for mem in relevant_memories if mem['similarity'] > 0.4]
+        # For temporal questions, use lower threshold and more memories
+        if is_temporal:
+            threshold = 0.3  # Lower threshold for temporal questions
+            max_to_use = 3   # More memories for temporal context
+        else:
+            threshold = 0.4  # Standard threshold
+            max_to_use = 2   # Standard limit
         
-        # If no high-quality memories, return empty (better than confusing the model)
+        # Filter for quality memories based on question type
+        high_quality_memories = [mem for mem in relevant_memories if mem['similarity'] > threshold]
+        
+        # If no high-quality memories, return empty
         if not high_quality_memories:
             return ""
         
-        # Limit to top 1-2 most relevant to avoid overloading
-        top_memories = high_quality_memories[:2]
+        # Limit to top memories
+        top_memories = high_quality_memories[:max_to_use]
         
         # Debug output
         if self.debug:
-            print(f"Debug: Retrieved {len(top_memories)} relevant memories for question: {question[:50]}...")
+            print(f"Debug: Retrieved {len(top_memories)} relevant memories for {'TEMPORAL' if is_temporal else 'standard'} question: {question[:50]}...")
             for i, mem in enumerate(top_memories):
                 print(f"  Memory {i+1} (sim: {mem['similarity']:.3f}): {mem['memory'][:80]}...")
         
-        # Format memories as additional context without disrupting the flow
-        context_lines = []
-        for mem in top_memories:
-            # Add memories as natural context sentences
-            context_lines.append(mem['memory'])
+        # For temporal questions, extract and highlight dates
+        if is_temporal:
+            return self._format_temporal_context(top_memories, question)
+        else:
+            # Standard formatting
+            context_lines = []
+            for mem in top_memories:
+                context_lines.append(mem['memory'])
+            
+            if context_lines:
+                return "Additional context: " + " ".join(context_lines) + "\n\n"
+            else:
+                return ""
+
+    def _is_temporal_question(self, question: str) -> bool:
+        """Check if a question is asking about time/dates."""
+        temporal_keywords = [
+            'when', 'what time', 'what date', 'how long ago', 'how long has',
+            'what year', 'what month', 'what day', 'how many years',
+            'how many months', 'how many days', 'what week', 'which week',
+            'before', 'after', 'since', 'until', 'during'
+        ]
         
-        # Return as a paragraph of context
-        if context_lines:
-            return "Additional context: " + " ".join(context_lines) + "\n\n"
+        question_lower = question.lower()
+        return any(keyword in question_lower for keyword in temporal_keywords)
+    
+    def _format_temporal_context(self, memories: List[Dict], question: str) -> str:
+        """Format memories with enhanced temporal information."""
+        if not memories:
+            return ""
+        
+        # Use LLM to extract temporal information
+        temporal_prompt = f"""Given these memory snippets and a temporal question, extract and highlight all dates, times, and temporal information.
+
+Question: {question}
+
+Memories:
+{chr(10).join([f"- {mem['memory']}" for mem in memories])}
+
+Extract and list all temporal information (dates, times, durations, sequences) that might help answer the question. Focus on:
+1. Specific dates and times mentioned
+2. Relative time references (e.g., "last week", "3 days ago")
+3. Duration information
+4. Temporal sequences or order of events
+
+Format your response as a clear list of temporal facts."""
+
+        try:
+            # Use the same model client to extract temporal info
+            if 'anthropic' in str(type(self.client)):
+                response = self.client.messages.create(
+                    model=self.model_name,
+                    messages=[{"role": "user", "content": temporal_prompt}],
+                    max_tokens=300
+                )
+                temporal_info = response.content[0].text if response.content else ""
+            elif 'openai' in str(type(self.client)):
+                from global_methods import run_gpt
+                temporal_info = run_gpt(self.client, self.model_name, temporal_prompt, max_tokens=300)
+            elif 'genai' in str(type(self.client)) or 'generativeai' in str(type(self.client)):
+                from global_methods import run_gemini
+                temporal_info = run_gemini(self.client, self.model_name, temporal_prompt, max_tokens=300)
+            else:
+                # Fallback to basic extraction
+                temporal_info = self._basic_temporal_extraction(memories)
+                
+            if temporal_info and temporal_info.strip():
+                return f"Temporal context:\n{temporal_info}\n\nOriginal memories: {' '.join([mem['memory'] for mem in memories[:2]])}\n\n"
+            else:
+                # Fallback to standard formatting
+                return "Additional context: " + " ".join([mem['memory'] for mem in memories]) + "\n\n"
+                
+        except Exception as e:
+            logger.error(f"Error in temporal extraction: {e}")
+            # Fallback to standard formatting
+            return "Additional context: " + " ".join([mem['memory'] for mem in memories]) + "\n\n"
+    
+    def _basic_temporal_extraction(self, memories: List[Dict]) -> str:
+        """Basic regex-based temporal extraction as fallback."""
+        import re
+        
+        temporal_info = []
+        
+        # Common date patterns
+        date_patterns = [
+            r'\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b',  # MM/DD/YYYY or DD/MM/YYYY
+            r'\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b',    # YYYY/MM/DD
+            r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}(?:st|nd|rd|th)?,? \d{4}\b',  # Month DDth, YYYY
+            r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}(?:st|nd|rd|th)?,? \d{4}\b',  # Mon DDth, YYYY
+            r'\b\d{1,2}(?:st|nd|rd|th)? (?:January|February|March|April|May|June|July|August|September|October|November|December) \d{4}\b',  # DDth Month YYYY
+            r'\b\d{1,2}(?:st|nd|rd|th)? (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{4}\b',     # DDth Mon YYYY
+            r'\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b',  # Days of week
+            r'\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\b',  # Times
+            r'\b\d+ (?:year|month|week|day|hour|minute)s? ago\b',  # Relative times
+            r'\b(?:last|next) (?:year|month|week|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b',
+            r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December) \d{4}\b',  # Month YYYY
+            r'\b\d{4}\b',  # Just years
+        ]
+        
+        for mem in memories:
+            text = mem['memory']
+            for pattern in date_patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                temporal_info.extend(matches)
+        
+        if temporal_info:
+            return "Extracted temporal information:\n" + "\n".join(f"- {info}" for info in set(temporal_info))
         else:
             return ""
 
