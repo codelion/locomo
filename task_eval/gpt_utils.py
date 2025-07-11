@@ -204,7 +204,7 @@ def get_input_context(data, num_question_tokens, encoding, args):
     return query_conv
 
 
-def get_gpt_answers(in_data, out_data, prediction_key, args):
+def get_gpt_answers(in_data, out_data, prediction_key, args, memory_system=None):
 
 
     encoding = tiktoken.encoding_for_model('gpt-3.5-turbo-16k' if any([k in args.model for k in ['16k', '12k', '8k', '4k']]) else args.model)
@@ -291,8 +291,15 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
             time.sleep(1)
 
         if args.batch_size == 1:
+            # Add memory context if memory system is available
+            memory_context = ""
+            if memory_system and questions:
+                try:
+                    memory_context = memory_system.get_relevant_context(questions[0], in_data.get('sample_id', 'unknown'))
+                except Exception as e:
+                    print(f"Warning: Failed to get memory context: {e}")
 
-            query = query_conv + '\n\n' + QA_PROMPT.format(questions[0]) if len(cat_5_idxs) == 0 else query_conv + '\n\n' + QA_PROMPT_CAT_5.format(questions[0])
+            query = query_conv + '\n\n' + memory_context + QA_PROMPT.format(questions[0]) if len(cat_5_idxs) == 0 else query_conv + '\n\n' + memory_context + QA_PROMPT_CAT_5.format(questions[0])
             answer = run_chatgpt(query, num_gen=1, num_tokens_request=32, 
                     model='chatgpt' if 'gpt-3.5' in args.model else args.model, 
                     use_16k=True if any([k in args.model for k in ['16k', '12k', '8k', '4k']]) else False, 
@@ -306,8 +313,17 @@ def get_gpt_answers(in_data, out_data, prediction_key, args):
                 out_data['qa'][include_idxs[0]][prediction_key + '_context'] = context_ids
 
         else:
+            # Add memory context for batch processing if memory system is available
+            memory_context = ""
+            if memory_system and questions:
+                try:
+                    # For batch processing, use the first question to get relevant memory context
+                    memory_context = memory_system.get_relevant_context(questions[0], in_data.get('sample_id', 'unknown'))
+                except Exception as e:
+                    print(f"Warning: Failed to get memory context: {e}")
+            
             # query = query_conv + '\n' + QA_PROMPT_BATCH + "\n".join(["QUESTION: %s" % q for q in questions])
-            query = query_conv + '\n' + question_prompt
+            query = query_conv + '\n' + memory_context + question_prompt
             
             trials = 0
             while trials < 3:

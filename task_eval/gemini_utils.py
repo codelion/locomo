@@ -135,7 +135,7 @@ def get_input_context(data, num_question_tokens, client, args):
     return query_conv
 
 
-def get_gemini_answers(client, in_data, out_data, prediction_key, args):
+def get_gemini_answers(client, in_data, out_data, prediction_key, args, memory_system=None):
 
 
     assert len(in_data['qa']) == len(out_data['qa']), (len(in_data['qa']), len(out_data['qa']))
@@ -211,8 +211,12 @@ def get_gemini_answers(client, in_data, out_data, prediction_key, args):
             raise NotImplementedError
         else:
             question_prompt =  QA_PROMPT_BATCH + "\n".join(["%s: %s" % (k, q) for k, q in enumerate(questions)])
-            num_question_tokens = client.models.count_tokens(model=args.model, contents=question_prompt).total_tokens
-            num_question_tokens = 200
+            # Try to count tokens, but use default if it fails
+            try:
+                num_question_tokens = client.models.count_tokens(model=args.model, contents=question_prompt).total_tokens
+            except Exception as e:
+                print(f"Warning: Failed to count tokens: {e}, using default value")
+                num_question_tokens = 200
             query_conv = get_input_context(in_data['conversation'], num_question_tokens + start_tokens, client, args)
             query_conv = start_prompt + query_conv
         
@@ -221,24 +225,46 @@ def get_gemini_answers(client, in_data, out_data, prediction_key, args):
 
         if 'pro' in args.model:
             time.sleep(30)
+        else:
+            # Add a longer delay for all Gemini calls to reduce connection pressure
+            time.sleep(5)
 
         if args.batch_size == 1:
+            # Add memory context if memory system is available
+            memory_context = ""
+            if memory_system and questions:
+                try:
+                    memory_context = memory_system.get_relevant_context(questions[0], in_data.get('sample_id', 'unknown'))
+                except Exception as e:
+                    print(f"Warning: Failed to get memory context: {e}")
 
-            query = query_conv + '\n\n' + QA_PROMPT.format(questions[0]) if len(cat_5_idxs) == 0 else query_conv + '\n\n' + QA_PROMPT_CAT_5.format(questions[0])
+            query = query_conv + '\n\n' + memory_context + QA_PROMPT.format(questions[0]) if len(cat_5_idxs) == 0 else query_conv + '\n\n' + memory_context + QA_PROMPT_CAT_5.format(questions[0])
 
             answer = run_gemini(client, args.model, query)
             
+            if answer is None:
+                print("Warning: Gemini API returned None response, skipping question")
+                continue
+            
             if len(cat_5_idxs) > 0:
                 answer = get_cat_5_answer(answer, cat_5_answers[0])
-
 
             out_data['qa'][include_idxs[0]][prediction_key] = answer.strip()
             if args.use_rag:
                 out_data['qa'][include_idxs[0]][prediction_key + '_context'] = context_ids
 
         else:
+            # Add memory context for batch processing if memory system is available
+            memory_context = ""
+            if memory_system and questions:
+                try:
+                    # For batch processing, use the first question to get relevant memory context
+                    memory_context = memory_system.get_relevant_context(questions[0], in_data.get('sample_id', 'unknown'))
+                except Exception as e:
+                    print(f"Warning: Failed to get memory context: {e}")
+            
             # query = query_conv + '\n' + QA_PROMPT_BATCH + "\n".join(["QUESTION: %s" % q for q in questions])
-            query = query_conv + '\n' + question_prompt
+            query = query_conv + '\n' + memory_context + question_prompt
             # print(query)
             
             trials = 0
@@ -249,6 +275,11 @@ def get_gemini_answers(client, in_data, out_data, prediction_key, args):
                     # print("Sending query of %s tokens" % client.models.count_tokens(model=args.model, contents=query).total_tokens)
                     # print("Trying with answer token budget = %s per question" % PER_QA_TOKEN_BUDGET)
                     answer = run_gemini(client, args.model, query)
+                    
+                    if answer is None:
+                        print(f"Warning: Gemini API returned None response on trial {trials}, retrying...")
+                        continue
+                    
                     answer = answer.replace('\\"', "'").replace('json','').replace('`','').strip()
 
                     # try:
@@ -258,6 +289,11 @@ def get_gemini_answers(client, in_data, out_data, prediction_key, args):
                     break
                 except json.decoder.JSONDecodeError:
                     pass
+            
+            # Check if all trials failed
+            if answer is None:
+                print("Error: All Gemini API trials failed, skipping batch")
+                continue
             
             for k, idx in enumerate(include_idxs):
                 try:
