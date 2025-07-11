@@ -115,7 +115,7 @@ def get_input_context(data, num_question_tokens, model, args):
     return query_conv
 
 
-def get_claude_answers(in_data, out_data, prediction_key, args):
+def get_claude_answers(in_data, out_data, prediction_key, args, memory_system=None):
 
     assert len(in_data['qa']) == len(out_data['qa']), (len(in_data['qa']), len(out_data['qa']))
 
@@ -199,9 +199,24 @@ def get_claude_answers(in_data, out_data, prediction_key, args):
             time.sleep(5)
 
         if args.batch_size == 1:
+            # Add memory context if memory system is available
+            memory_context = ""
+            if memory_system and questions:
+                try:
+                    memory_context = memory_system.get_relevant_context(questions[0], in_data.get('sample_id', 'unknown'))
+                except Exception as e:
+                    print(f"Warning: Failed to get memory context: {e}")
 
-            query = query_conv + '\n\n' + QA_PROMPT.format(questions[0]) if len(cat_5_idxs) == 0 else query_conv + '\n\n' + QA_PROMPT_CAT_5.format(questions[0])
-            answer = run_claude(query, PER_QA_TOKEN_BUDGET, args.model)
+            query = query_conv + '\n\n' + memory_context + QA_PROMPT.format(questions[0]) if len(cat_5_idxs) == 0 else query_conv + '\n\n' + memory_context + QA_PROMPT_CAT_5.format(questions[0])
+            
+            try:
+                answer = run_claude(query, PER_QA_TOKEN_BUDGET, args.model)
+                if answer is None:
+                    print("Warning: Claude API returned None response, skipping question")
+                    continue
+            except Exception as e:
+                print(f"Error calling Claude API: {e}, skipping question")
+                continue
             
             if len(cat_5_idxs) > 0:
                 answer = get_cat_5_answer(answer, cat_5_answers[0])
@@ -211,8 +226,17 @@ def get_claude_answers(in_data, out_data, prediction_key, args):
                 out_data['qa'][include_idxs[0]][prediction_key + '_context'] = context_ids
 
         else:
+            # Add memory context for batch processing if memory system is available
+            memory_context = ""
+            if memory_system and questions:
+                try:
+                    # For batch processing, use the first question to get relevant memory context
+                    memory_context = memory_system.get_relevant_context(questions[0], in_data.get('sample_id', 'unknown'))
+                except Exception as e:
+                    print(f"Warning: Failed to get memory context: {e}")
+            
             # query = query_conv + '\n' + QA_PROMPT_BATCH + "\n".join(["QUESTION: %s" % q for q in questions])
-            query = query_conv + '\n' + question_prompt
+            query = query_conv + '\n' + memory_context + question_prompt
             # print(query)
             
             trials = 0
@@ -223,6 +247,11 @@ def get_claude_answers(in_data, out_data, prediction_key, args):
                     # print("Sending query of %s tokens" % len(model.count_tokens(query)))
                     # print("Trying with answer token budget = %s per question" % PER_QA_TOKEN_BUDGET)
                     answer = run_claude(query, PER_QA_TOKEN_BUDGET * args.batch_size, args.model)
+                    
+                    if answer is None:
+                        print(f"Warning: Claude API returned None response on trial {trials}, retrying...")
+                        continue
+                    
                     answer = answer.replace('\\"', "'").replace('json','').replace('`','').strip()
                     # try:
                     #     answers = json.loads(answer.strip())
@@ -231,6 +260,11 @@ def get_claude_answers(in_data, out_data, prediction_key, args):
                     break
                 except json.decoder.JSONDecodeError:
                     pass
+            
+            # Check if all trials failed
+            if answer is None:
+                print("Error: All Claude API trials failed, skipping batch")
+                continue
             
             for k, idx in enumerate(include_idxs):
                 try:

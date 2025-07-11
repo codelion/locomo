@@ -88,15 +88,15 @@ CONV_START_PROMPT = "Below is a conversation between two people: {} and {}. The 
 ANS_TOKENS_PER_QUES = 50
 
 
-def run_mistral(pipeline, question, data, tokenizer, args):
+def run_mistral(pipeline, question, data, tokenizer, args, memory_context=""):
 
     question_prompt =  QA_PROMPT.format(question)
     query_conv = get_input_context(data['conversation'], MISTRAL_INSTRUCT_SYSTEM_PROMPT.format(question_prompt), tokenizer, args)
 
     # without chat_template
-    # query = MISTRAL_INSTRUCT_SYSTEM_PROMPT.format(query_conv + '\n\n' + question_prompt)
+    # query = MISTRAL_INSTRUCT_SYSTEM_PROMPT.format(query_conv + '\n\n' + memory_context + question_prompt)
     # with chat template
-    query = tokenizer.apply_chat_template([{"role": "user", "content": query_conv + '\n\n' + question_prompt}], tokenize=False, add_generation_prompt=True)
+    query = tokenizer.apply_chat_template([{"role": "user", "content": query_conv + '\n\n' + memory_context + question_prompt}], tokenize=False, add_generation_prompt=True)
 
     sequences = pipeline(
                         query,
@@ -114,15 +114,15 @@ def run_mistral(pipeline, question, data, tokenizer, args):
     return sequences[0]['generated_text']
 
 
-def run_gemma(pipeline, question, data, tokenizer, args):
+def run_gemma(pipeline, question, data, tokenizer, args, memory_context=""):
 
     question_prompt =  QA_PROMPT.format(question)
     query_conv = get_input_context(data['conversation'], GEMMA_INSTRUCT_PROMPT.format(question_prompt), tokenizer, args)
 
     # without chat_template
-    # query = MISTRAL_INSTRUCT_SYSTEM_PROMPT.format(query_conv + '\n\n' + question_prompt)
+    # query = MISTRAL_INSTRUCT_SYSTEM_PROMPT.format(query_conv + '\n\n' + memory_context + question_prompt)
     # with chat template
-    query = tokenizer.apply_chat_template([{"role": "user", "content": query_conv + '\n\n' + question_prompt}], tokenize=False, add_generation_prompt=True)
+    query = tokenizer.apply_chat_template([{"role": "user", "content": query_conv + '\n\n' + memory_context + question_prompt}], tokenize=False, add_generation_prompt=True)
 
     sequences = pipeline(
                         query,
@@ -140,16 +140,16 @@ def run_gemma(pipeline, question, data, tokenizer, args):
     return sequences[0]['generated_text']
 
 
-def run_llama(pipeline, question, data, tokenizer, args):
+def run_llama(pipeline, question, data, tokenizer, args, memory_context=""):
 
     question_prompt =  QA_PROMPT.format(question)
     query_conv = get_input_context(data['conversation'], LLAMA3_CHAT_SYSTEM_PROMPT.format(question_prompt), tokenizer, args)
 
     # without chat_template
-    # query = MISTRAL_INSTRUCT_SYSTEM_PROMPT.format(query_conv + '\n\n' + question_prompt)
+    # query = MISTRAL_INSTRUCT_SYSTEM_PROMPT.format(query_conv + '\n\n' + memory_context + question_prompt)
     # with chat template
     query = tokenizer.apply_chat_template([{"role": "system", "content": "You are a helpful, respectful and honest assistant whose job is to understand the following conversation and answer questions based on the conversation. If you don't know the answer to a question, please don't share false information."},
-                                           {"role": "user", "content": query_conv + '\n\n' + question_prompt}], tokenize=False, add_generation_prompt=True)
+                                           {"role": "user", "content": query_conv + '\n\n' + memory_context + question_prompt}], tokenize=False, add_generation_prompt=True)
 
     sequences = pipeline(
                         query,
@@ -222,7 +222,7 @@ def get_input_context(data, question_prompt, encoding, args):
     return query_conv
 
 
-def get_hf_answers(in_data, out_data, args, pipeline, model_name):
+def get_hf_answers(in_data, out_data, args, pipeline, model_name, memory_system=None):
 
     if 'mistral' in model_name:
         encoding = AutoTokenizer.from_pretrained(model_name)
@@ -281,17 +281,29 @@ def get_hf_answers(in_data, out_data, args, pipeline, model_name):
 
 
         if args.batch_size == 1:
+            # Add memory context if memory system is available
+            memory_context = ""
+            if memory_system and questions:
+                try:
+                    memory_context = memory_system.get_relevant_context(questions[0], in_data.get('sample_id', 'unknown'))
+                except Exception as e:
+                    print(f"Warning: Failed to get memory context: {e}")
 
             if 'mistral' in model_name:
-                answer = run_mistral(pipeline, questions[0], in_data, encoding, args)
+                answer = run_mistral(pipeline, questions[0], in_data, encoding, args, memory_context)
             elif 'llama' in model_name:
-                answer = run_llama(pipeline, questions[0], in_data, encoding, args)
+                answer = run_llama(pipeline, questions[0], in_data, encoding, args, memory_context)
             elif 'gemma' in model_name:
-                answer = run_gemma(pipeline, questions[0], in_data, encoding, args)
+                answer = run_gemma(pipeline, questions[0], in_data, encoding, args, memory_context)
             else:
                 raise NotImplementedError
             
             print(questions[0], answer)
+
+            # Check if the model returned a valid response
+            if answer is None or answer == "":
+                print("Warning: HuggingFace model returned empty response, skipping question")
+                continue
 
             # post process answers, necessary for Adversarial Questions
             answer = answer.replace('\\"', "'").strip()

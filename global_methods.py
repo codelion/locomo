@@ -27,8 +27,13 @@ def get_gemini_client():
     if not api_key:
         raise ValueError("Please set GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
     
-    # Create and return the client
-    return genai.Client(api_key=api_key)
+    # Create and return the client with timeout configuration
+    try:
+        # Try to set timeout if supported
+        return genai.Client(api_key=api_key, timeout=60)
+    except TypeError:
+        # Fallback if timeout parameter is not supported
+        return genai.Client(api_key=api_key)
 
 def set_openai_key():
     openai.api_key = os.environ['OPENAI_API_KEY']
@@ -89,15 +94,52 @@ def run_claude(query, max_new_tokens, model_name):
 
 
 def run_gemini(client, model_name: str, content: str, max_tokens: int = 0):
-    try:
-        response = client.models.generate_content(
+    import time
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+    
+    max_retries = 3
+    retry_delay = 5  # Start with longer initial delay
+    request_timeout = 60  # 60 second timeout per request
+    
+    def make_api_call():
+        return client.models.generate_content(
             model=model_name,
             contents=content
         )
-        return response.text
-    except Exception as e:
-        print(f'{type(e).__name__}: {e}')
-        return None
+    
+    for attempt in range(max_retries):
+        try:
+            # Execute API call with timeout using ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(make_api_call)
+                try:
+                    response = future.result(timeout=request_timeout)
+                    return response.text
+                except FutureTimeoutError:
+                    raise TimeoutError(f"Gemini API request timed out after {request_timeout} seconds")
+                    
+        except (ConnectionError, ConnectionResetError) as e:
+            if attempt < max_retries - 1:
+                print(f'Connection error on attempt {attempt + 1}: {e}, retrying in {retry_delay}s...')
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff: 5s, 10s, 20s
+                continue
+            else:
+                print(f'Connection error: Failed after {max_retries} attempts: {e}')
+                return None
+        except TimeoutError as e:
+            if attempt < max_retries - 1:
+                print(f'Timeout on attempt {attempt + 1}: {e}, retrying in {retry_delay}s...')
+                time.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+            else:
+                print(f'Timeout: Failed after {max_retries} attempts: {e}')
+                return None
+        except Exception as e:
+            print(f'{type(e).__name__}: {e}')
+            return None
 
 
 def run_chatgpt(query, num_gen=1, num_tokens_request=1000, 
